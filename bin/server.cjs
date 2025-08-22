@@ -1,31 +1,37 @@
 #!/usr/bin/env node
+const http = require('http');
+const WebSocket = require('ws');
 
-const WebSocket = require('ws')
-const http = require('http')
-const number = require('lib0/number')
-const wss = new WebSocket.Server({ noServer: true })
-const setupWSConnection = require('./utils.cjs').setupWSConnection
+// 1. Import y-websocket utils
+const { setupWSConnection, setPersistence } = require('y-websocket/bin/utils');
 
-const host = process.env.HOST || 'localhost'
-const port = number.parseInt(process.env.PORT || '1234')
+// 2. Import your persistence layer (store.cjs)
+const { persistence } = require('./store.cjs');
 
-const server = http.createServer((_request, response) => {
-  response.writeHead(200, { 'Content-Type': 'text/plain' })
-  response.end('okay')
-})
+// 3. Tell y-websocket to use DynamoDB persistence
+setPersistence(persistence);
 
-wss.on('connection', setupWSConnection)
+const host = process.env.HOST || '0.0.0.0';
+const port = Number(process.env.PORT || 1234);
 
-server.on('upgrade', (request, socket, head) => {
-  // You may check auth of request here..
-  // Call `wss.HandleUpgrade` *after* you checked whether the client has access
-  // (e.g. by checking cookies, or url parameters).
-  // See https://github.com/websockets/ws#client-authentication
-  wss.handleUpgrade(request, socket, head, /** @param {any} ws */ ws => {
-    wss.emit('connection', ws, request)
-  })
-})
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('okay');
+});
+
+const wss = new WebSocket.Server({ noServer: true });
+
+// 4. Let y-websocket manage docs — don’t pass your own { doc }
+wss.on('connection', (ws, req) => {
+  setupWSConnection(ws, req);
+});
+
+server.on('upgrade', (req, socket, head) => {
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
 
 server.listen(port, host, () => {
-  console.log(`running at '${host}' on port ${port}`)
-})
+  console.log(`WebSocket server running at '${host}' on port ${port}`);
+});
