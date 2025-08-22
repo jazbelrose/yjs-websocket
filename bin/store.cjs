@@ -1,3 +1,4 @@
+// store.cjs
 const Y = require('yjs');
 
 const USE_DDB = process.env.USE_DDB_PERSISTENCE === '1';
@@ -9,40 +10,61 @@ class InMemoryPersistence {
     log('bindState (IN-MEMORY) name=%s', name);
     return { doc, cleanup: () => log('cleanup name=%s', name) };
   }
-  async writeState(name, doc) { log('writeState (IN-MEMORY) name=%s', name); }
+  async writeState(name, doc) {
+    log('writeState (IN-MEMORY) name=%s', name);
+  }
 }
+
 if (!USE_DDB) {
   log('Using IN-MEMORY persistence (USE_DDB_PERSISTENCE != 1)');
   module.exports.persistence = new InMemoryPersistence();
   return;
 }
 
-const { DynamoDBClient, GetItemCommand, PutItemCommand } = require('@aws-sdk/client-dynamodb');
+const {
+  DynamoDBClient,
+  GetItemCommand,
+  UpdateItemCommand,
+} = require('@aws-sdk/client-dynamodb');
 
-const TABLE   = process.env.DDB_TABLE || 'Projects';
-const REGION  = process.env.AWS_REGION || 'us-west-1';
-const PK      = process.env.DDB_PROJECT_PK || 'projectId';
-const DESC    = process.env.DDB_DESC_ATTR || 'description';
+const TABLE       = process.env.DDB_TABLE || 'Projects';
+const REGION      = process.env.AWS_REGION || 'us-west-1';
+const PK          = process.env.DDB_PROJECT_PK || 'projectId';
+const DESC        = process.env.DDB_DESC_ATTR || 'description';
 const DEBOUNCE_MS = Number(process.env.PERSIST_DEBOUNCE_MS || 3000);
 
 const ddb = new DynamoDBClient({ region: REGION });
 const utf8Len = (s) => Buffer.byteLength(s || '', 'utf8');
+
 function createDebouncer(delayMs) {
   const timers = new Map();
   return (key, fn) => {
     if (timers.has(key)) clearTimeout(timers.get(key));
-    timers.set(key, setTimeout(async () => {
-      timers.delete(key);
-      try { await fn(); } catch (e) { err('save error name=%s err=%s', key, e?.message); }
-    }, delayMs));
+    timers.set(
+      key,
+      setTimeout(async () => {
+        timers.delete(key);
+        try {
+          await fn();
+        } catch (e) {
+          err('save error name=%s err=%s', key, e?.message);
+        }
+      }, delayMs)
+    );
   };
 }
 const debounceSave = createDebouncer(DEBOUNCE_MS);
 
 class DynamoDbPersistence {
   constructor() {
-    log('Using DYNAMODB persistence table=%s region=%s pk=%s attr=%s debounce=%sms',
-      TABLE, REGION, PK, DESC, DEBOUNCE_MS);
+    log(
+      'Using DYNAMODB persistence table=%s region=%s pk=%s attr=%s debounce=%sms',
+      TABLE,
+      REGION,
+      PK,
+      DESC,
+      DEBOUNCE_MS
+    );
   }
 
   async _getDescription(name) {
@@ -61,14 +83,21 @@ class DynamoDbPersistence {
   async _putDescription(name, json) {
     const size = utf8Len(json);
     log('(_putDescription) name=%s bytes=%s', name, size);
-    const cmd = new PutItemCommand({
+
+    const cmd = new UpdateItemCommand({
       TableName: TABLE,
-      Item: {
-        [PK]: { S: name },
-        [DESC]: { S: json || '' },
-        updatedAt: { S: new Date().toISOString() },
+      Key: { [PK]: { S: name } },
+      UpdateExpression: 'SET #d = :val, updatedAt = :t',
+      ExpressionAttributeNames: { '#d': DESC },
+      ExpressionAttributeValues: {
+        ':val': { S: json || '' },
+        ':t': { S: new Date().toISOString() },
       },
+      // Optional: uncomment to only update existing items
+      // ConditionExpression: 'attribute_exists(#pk)',
+      // ExpressionAttributeNames: { '#pk': PK, '#d': DESC },
     });
+
     await ddb.send(cmd);
   }
 
@@ -97,12 +126,16 @@ class DynamoDbPersistence {
           log('saved %s to DynamoDB (%s bytes)', name, utf8Len(serialized));
         });
       };
+
       doc.on('update', updateHandler);
 
       const cleanup = () => {
-        try { doc.off('update', updateHandler); } catch {}
+        try {
+          doc.off('update', updateHandler);
+        } catch {}
         log('cleanup name=%s', name);
       };
+
       return { doc, cleanup };
     } catch (e) {
       err('bindState error name=%s err=%s stack=%s', name, e?.message, e?.stack);
