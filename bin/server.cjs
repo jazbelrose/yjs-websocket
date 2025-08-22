@@ -1,37 +1,51 @@
 #!/usr/bin/env node
-const http = require('http');
+
 const WebSocket = require('ws');
-
-// 1. Import y-websocket utils
+const http = require('http');
 const { setupWSConnection, setPersistence } = require('y-websocket/bin/utils');
+const Y = require('yjs');
 
-// 2. Import your persistence layer (store.cjs)
-const { persistence } = require('./store.cjs');
-
-// 3. Tell y-websocket to use DynamoDB persistence
-setPersistence(persistence);
 
 const host = process.env.HOST || '0.0.0.0';
-const port = Number(process.env.PORT || 1234);
-
+const port = process.env.PORT || 1234;
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('okay');
 });
-
 const wss = new WebSocket.Server({ noServer: true });
 
-// 4. Let y-websocket manage docs — don’t pass your own { doc }
+// Global cache for Y.Doc instances
+const yDocs = new Map();
+function getYDoc(roomId) {
+  if (!yDocs.has(roomId)) {
+    const doc = new Y.Doc();
+    yDocs.set(roomId, doc);
+  }
+  return yDocs.get(roomId);
+}
+
 wss.on('connection', (ws, req) => {
-  setupWSConnection(ws, req);
+  // Parse room ID from URL; "http://dummy" is just a dummy base URL for parsing
+  const roomId = new URL(req.url, "http://dummy").searchParams.get("room") || "default-room";
+
+  // Reuse or create the Y.Doc for this room
+  const doc = getYDoc(roomId);
+
+  // Setup the connection with the shared Y.Doc
+  setupWSConnection(ws, req, { doc });
 });
 
 server.on('upgrade', (req, socket, head) => {
-  wss.handleUpgrade(req, socket, head, (ws) => {
+  const handleAuth = ws => {
     wss.emit('connection', ws, req);
-  });
+  };
+  wss.handleUpgrade(req, socket, head, handleAuth);
 });
 
 server.listen(port, host, () => {
   console.log(`WebSocket server running at '${host}' on port ${port}`);
+
 });
+
+
+
